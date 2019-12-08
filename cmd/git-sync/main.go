@@ -81,6 +81,9 @@ var flWebhookTimeout = flag.Duration("webhook-timeout", envDuration("GIT_SYNC_WE
 var flWebhookBackoff = flag.Duration("webhook-backoff", envDuration("GIT_SYNC_WEBHOOK_BACKOFF", time.Second*3),
 	"the time to wait before retrying a failed webhook")
 
+var flGitUpdateServerInfo = flag.Bool("git-update-server-info", envBool("GIT_UPDATE_SERVER_INFO", false),
+	"run git update-server-info command after each sync")
+
 var flUsername = flag.String("username", envString("GIT_SYNC_USERNAME", ""),
 	"the username to use for git auth")
 var flPassword = flag.String("password", envString("GIT_SYNC_PASSWORD", ""),
@@ -330,8 +333,16 @@ func main() {
 			cancel()
 			time.Sleep(waitTime(*flWait))
 			continue
-		} else if changed && webhook != nil {
-			webhook.Send(hash)
+		} else if changed {
+			if *flGitUpdateServerInfo {
+				if err := runGitUpdateServerInfo(context.Background(), *flRoot, *flDest); err != nil {
+					log.Error(err, "failed to run git update-server-info for hash %s", hash)
+				}
+			}
+
+			if webhook != nil {
+				webhook.Send(hash)
+			}
 		}
 		syncDuration.WithLabelValues("success").Observe(time.Since(start).Seconds())
 		syncCount.WithLabelValues("success").Inc()
@@ -731,7 +742,7 @@ func setupGitSSH(setupKnownHosts bool) error {
 		err = os.Setenv("GIT_SSH_COMMAND", fmt.Sprintf("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i %s", pathToSSHSecret))
 	}
 
-	//set env variable GIT_SSH_COMMAND to force git use customized ssh command
+	// set env variable GIT_SSH_COMMAND to force git use customized ssh command
 	if err != nil {
 		return fmt.Errorf("Failed to set the GIT_SSH_COMMAND env var: %v", err)
 	}
@@ -752,6 +763,19 @@ func setupGitCookieFile(ctx context.Context) error {
 	if _, err = runCommand(ctx, "",
 		*flGitCmd, "config", "--global", "http.cookiefile", pathToCookieFile); err != nil {
 		return fmt.Errorf("error configuring git cookie file: %v", err)
+	}
+
+	return nil
+}
+
+func runGitUpdateServerInfo(ctx context.Context, gitRoot, dest string) error {
+	cwd := path.Join(gitRoot, dest)
+
+	log.V(0).Info("running git update-server-info")
+
+	if _, err := runCommand(ctx, cwd,
+		*flGitCmd, "update-server-info"); err != nil {
+		return fmt.Errorf("error running git update-server-info: %v", err)
 	}
 
 	return nil
